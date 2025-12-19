@@ -25,9 +25,9 @@ from src.gateway.service import CaptivePortalService
 
 # === 設定區 ===
 # 請使用 ip addr 確認無線網卡名稱 (例如 wlan0, wlp2s0)
-WIFI_INTERFACE = "lo"  
+WIFI_INTERFACE = "eno1"  
 # 設定熱點網段 (例如 192.168.10.0/24)
-TARGET_NETWORK = "192.168.10.0/24"
+TARGET_NETWORK = "192.168.100.0/24"
 
 # 初始化 AI (Mistral 跑不動)
 ai_service = AIQuizService(model="gemma2:2b")
@@ -40,7 +40,14 @@ app = FastAPI(
 )
 
 # CORS 設定
-origins = ["http://localhost", "http://127.0.0.1", "http://example.com", "*"]
+origins = [
+    "http://localhost",
+    "http://127.0.0.1",
+    "http://127.0.0.1:8000",
+    "http://192.168.100.1",      # 你的伺服器 IP (前端網址)
+    "http://192.168.100.1:8000", # 有時候瀏覽器會帶 Port
+    "*"                          # 開發測試時，可以直接用 "*" 允許所有來源
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -78,14 +85,144 @@ student_quiz_state = {}
 # === Helper: 取得 MAC ===
 async def get_current_mac(
     request: Request,
-    x_mac_address: Optional[str] = Header(None, alias="X-Mac-Address")
+    x_mac_address: Optional[str] = Header(None, alias="X-Mac-Address"),
+    db: Session = Depends(get_db) # ### 新增：注入資料庫連線
 ) -> str:
+    # 優先順序 1：HTTP Header (通常由 Gateway 轉發時帶入)
     if x_mac_address:
         return x_mac_address
+
+    # 優先順序 2：網址參數 (例如 ?mac=aa:bb:cc...)
     mac_param = request.query_params.get("mac")
     if mac_param:
         return mac_param
+
+    # 優先順序 3：透過來源 IP 去資料庫反查 MAC
+    client_ip = request.client.host
+    
+    # 排除 localhost (開發測試時可能是 127.0.0.1)
+    if client_ip in ["127.0.0.1", "localhost"]:
+        # 開發環境下，隨便回傳一個假的或寫死的，方便測試
+        return "00:00:00:00:00:00"
+
+    print(f"[MAC Lookup] 嘗試透過 IP 反查: {client_ip}")
+
+    # 查詢 ConnectionLog 表
+    # 邏輯：找這個 IP 最近的一筆連線紀錄
+    last_log = db.query(ConnectionLog)\
+        .filter(ConnectionLog.ip_address == client_ip)\
+        .order_by(ConnectionLog.timestamp.desc())\
+        .first()
+
+    if last_log:
+        print(f"[MAC Lookup] 找到對應 MAC: {last_log.mac_address}")
+        return last_log.mac_address
+
+    # 優先順序 4 (保底)：如果資料庫也沒有，嘗試讀取系統 ARP 表 (更即時)
+    # 有時候資料庫還沒寫入，但系統底層已經有 ARP 了
+    try:
+        with open('/proc/net/arp', 'r') as f:
+            lines = f.readlines()[1:] # 跳過標題
+            for line in lines:
+                parts = line.split()
+                # parts[0] 是 IP, parts[3] 是 MAC
+                if len(parts) >= 4 and parts[0] == client_ip:
+                    print(f"[MAC Lookup] ARP 表命中: {parts[3]}")
+                    return parts[3]
+    except Exception as e:
+        print(f"[MAC Lookup] ARP 讀取失敗: {e}")
+
+    print(f"[MAC Lookup] 無法識別 MAC，IP: {client_ip}")
     return "00:00:00:00:00:00"
+
+def get_ip_by_mac(target_mac: str) -> Optional[str]:
+    """
+    簡單讀取 /proc/net/arp 來尋找對應 MAC 的 IP
+    注意：這需要該設備近期有發送過封包，ARP 表才會有紀錄
+    """
+    try:
+        with open('/proc/net/arp', 'r') as f:
+            lines = f.readlines()[1:] # 跳過標題
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 4:
+                    ip = parts[0]
+                    mac = parts[3]
+                    if mac.lower() == target_mac.lower():
+                        return ip
+    except Exception as e:
+        print(f"[ARP Lookup Error] {e}")
+    return None
+
+# === ### 新增: 執行解鎖 Script 的 Helper ===
+def execute_restore_script(ip: str, interface: str):
+    """
+    執行 sudo ./restore.sh <IP> <介面>
+    注意：執行此程式的使用者需要有 sudo 權限且設定 NOPASSWD，否則會卡在輸入密碼。
+    """
+    try:
+        print(f"[System] 執行解鎖腳本: sudo ./restore.sh {ip} {interface}")
+        # 確保 restore.sh 有執行權限 (chmod +x restore.sh)
+        result = subprocess.run(
+            ["sudo", "./restore.sh", ip, interface],
+            capture_output=True,
+            text=True,
+            check=False # 不拋出異常，手動檢查 returncode
+        )
+        
+        if result.returncode == 0:
+            print(f"[System] 解鎖成功: {result.stdout}")
+            return True
+        else:
+            print(f"[System] 解鎖失敗 (Code {result.returncode}): {result.stderr}")
+            return False
+    except Exception as e:
+        print(f"[System] 執行腳本發生錯誤: {e}")
+        return False
+
+def check_and_mark_offline(db: Session, timeout_seconds: int = 45):
+    """
+    檢查所有目前狀態為 'online' 的學生
+    如果他們最近一筆連線紀錄超過 timeout_seconds 秒，就標記為 'offline'
+    """
+    try:
+        # 1. 找出所有目前資料庫標記為 online 的學生
+        online_students = db.query(StudentRecord).filter(StudentRecord.status == 'online').all()
+        
+        # 設定逾時時間點 (現在時間 - 容許秒數)
+        # 注意：這裡必須跟 ConnectionLog 的寫入時間時區一致，建議都用 utcnow
+        cutoff_time = datetime.utcnow() - timedelta(seconds=timeout_seconds)
+        
+        offline_count = 0
+        
+        for student in online_students:
+            # 2. 找該學生最後一次的連線紀錄
+            last_log = db.query(ConnectionLog)\
+                .filter(ConnectionLog.mac_address == student.mac_address)\
+                .order_by(ConnectionLog.timestamp.desc())\
+                .first()
+
+            if last_log:
+                now = datetime.utcnow()
+                diff = now - last_log.timestamp
+                print(f"現在時間: {datetime.utcnow()}")
+                print(f"最後紀錄: {last_log.timestamp}")
+                print(f"相差秒數: {diff.total_seconds()}")
+            
+            # 3. 判斷是否逾時
+            # 如果完全沒紀錄，或者最後紀錄時間早於截止時間 -> 判定離線
+            if not last_log or last_log.timestamp < cutoff_time:
+                print(f"[System] 偵測到 {student.name} ({student.mac_address}) 已離線")
+                student.status = 'offline'
+                offline_count += 1
+        
+        if offline_count > 0:
+            db.commit()
+            # print(f"[System] 已將 {offline_count} 位使用者標記為離線")
+            
+    except Exception as e:
+        print(f"[Check Offline Error] {e}")
+        db.rollback()
 
 # === 定期掃描網路 (Background Task) ===
 async def network_scanner_loop():
@@ -95,20 +232,21 @@ async def network_scanner_loop():
             db = SessionLocal()
             registry_service = StudentRegistryService(db)
             
-            # 執行掃描
+            # 1. 執行掃描 (將掃到的裝置更新為 Online / 寫入 Log)
             scan_results = scanner.scan(TARGET_NETWORK) 
-            
             if scan_results:
                 registry_service.process_scan_results(scan_results)
             
+            # 2. ### 新增：檢查並標記離線使用者 ###
+            # 建議設定 45~60 秒。因為掃描每 5 秒一次，給一點緩衝避免訊號不穩閃爍
+            check_and_mark_offline(db, timeout_seconds=45)
+            
             db.close()
         except Exception as e:
-            # 這裡把錯誤印出來，但不要讓 loop 停下來
-            # print(f"[Scanner Error] {e}") 
+            print(f"[Scanner Loop Error] {e}") 
             pass
             
         await asyncio.sleep(5)
-
 @app.on_event("startup")
 async def startup_event():
     # 建立資料庫表格
@@ -193,11 +331,11 @@ async def login(data: LoginRequest, db: Session = Depends(get_db)):
 
 @app.get("/api/students")
 async def get_students(db: Session = Depends(get_db)):
-    students = student_repo.get_all_students(db)
+    students = student_repo.get_all_students(db) # 這裡現在會正常運作了
     response_data = []
     
     cutoff_time = datetime.utcnow() - timedelta(seconds=30)
-    
+
     for s in students:
         last_log = db.query(ConnectionLog)\
             .filter(ConnectionLog.mac_address == s.mac_address)\
@@ -205,6 +343,13 @@ async def get_students(db: Session = Depends(get_db)):
             .first()
             
         is_online = False
+        
+        # 修改這裡：
+        # 前端 teacher.html 判斷 traffic > 1000 才會變紅燈
+        # 我們讓違規次數 > 0 的人，流量看起來很高
+        # TEST
+        current_traffic = s.violation_count * 100 
+        
         if last_log and last_log.timestamp > cutoff_time:
             is_online = True
             
@@ -213,7 +358,8 @@ async def get_students(db: Session = Depends(get_db)):
             "name": s.name,
             "mac": s.mac_address,
             "status": "online" if is_online else "offline",
-            "violation_count": s.violation_count 
+            "violation_count": s.violation_count,
+            "traffic": current_traffic # 傳回計算後的模擬流量
         })
         
     return response_data
@@ -231,7 +377,7 @@ async def upload_material(file: UploadFile = File(...)):
         return {"message": f"成功載入：{file.filename}，知識庫片段數: {len(pdf_loader.knowledge_base)}"}
     else:
         raise HTTPException(status_code=500, detail="解析 PDF 失敗")
-
+        
 # 取得已上傳檔案
 @app.get("/api/admin/files")
 async def get_uploaded_files():
@@ -392,19 +538,68 @@ async def confirm_payment(
     data: dict,
     db: Session = Depends(get_db)
 ):
-    user_mac = data.get("student_id")
-    # 解鎖網路
+    user_mac = data.get("mac_address")
+    
+    # 1. 取得 IP (執行 Script 需要)
+    user_ip = get_ip_by_mac(user_mac)
+    
+    # 如果 ARP 表找不到，嘗試從資料庫最近的連線紀錄找 (fallback)
+    if not user_ip:
+        last_log = db.query(ConnectionLog)\
+            .filter(ConnectionLog.mac_address == user_mac)\
+            .order_by(ConnectionLog.timestamp.desc())\
+            .first()
+        if last_log:
+            user_ip = last_log.ip_address
+
+    if not user_ip:
+        # 如果真的找不到 IP，可能設備離線，這裡視情況決定是否報錯或僅進行 DB 授權
+        print(f"[Warning] 無法找到 MAC {user_mac} 對應的 IP，Script 可能無法執行")
+        # 為了容錯，暫時給個 dummy 或報錯，這裡選擇繼續跑 DB 流程
+    
+    # 2. 處理資料庫違規狀態 (Check p_status)
+    # 假設 table 名稱是 student，欄位是 p_status
+    # 使用原生 SQL 確保能操作特定的 steam_guard 邏輯，或者您可以使用 ORM 對象
+    try:
+        # 先查詢狀態
+        # 注意: 這裡假設您的 ORM Model 'StudentRecord' 對應到 'student' 表
+        # 如果沒有對應，請用 db.execute(text("SELECT p_status FROM student WHERE ..."))
+        
+        student = db.query(StudentRecord).filter(StudentRecord.mac_address == user_mac).first()
+        
+        if student:
+            # 檢查是否違規
+            # 如果您的 Model 裡還沒定義 p_status，可以用 getattr(student, 'p_status', 'NORMAL')
+            current_status = getattr(student, 'p_status', 'NORMAL')
+            
+            if current_status == 'PUNISHED':
+                print(f"[Payment] 學生 {user_mac} 狀態為 PUNISHED，付款後解除違規狀態。")
+                # 更新狀態為 NORMAL
+                student.p_status = 'NORMAL' 
+                # 或者用原生 SQL:
+                # db.execute(text("UPDATE student SET p_status = 'NORMAL' WHERE mac_address = :mac"), {"mac": user_mac})
+                db.commit()
+            else:
+                print(f"[Payment] 學生 {user_mac} 狀態為 {current_status}，無需解除違規。")
+    except Exception as e:
+        print(f"[DB Error] 檢查違規狀態失敗: {e}")
+        db.rollback()
+
+    # 3. 執行系統層解鎖 (FastAPI 授權 + Shell Script)
     await portal_service.authorize_device(db, user_mac)
     
-    # 清除罰款狀態
+    if user_ip:
+        # ### 呼叫 Shell Script ###
+        script_success = execute_restore_script(user_ip, WIFI_INTERFACE)
+        if not script_success:
+            return {"status": "warning", "message": "付款成功，但在執行網路解鎖 Script 時發生錯誤，請聯繫管理員"}
+
+    # 4. 清除罰款暫存狀態
     if user_mac in student_quiz_state:
         del student_quiz_state[user_mac]
         
-    return {"status": "success", "message": "付款成功，網路已解鎖"}
+    return {"status": "success", "message": "付款成功，違規狀態已解除，網路已解鎖"}
 
-
-# --- 付款相關 ---
-# --- 檢查付款狀態 ---
 @app.get("/api/payment/check")
 async def check_payment_status(
     mac: str = Depends(get_current_mac),
@@ -430,16 +625,40 @@ async def check_payment_status(
     
     return {"status": "pending", "message": "等待付款中..."}
 
-# --- 模擬 TG Bot ---
-# 真實：TG Bot 收到錢後，會打這個 API 通知 Server
+# === ### 修改: TG Bot Callback 也要同步修改 ===
 @app.post("/api/payment/callback")
-async def payment_callback(data: dict):
-    target_mac = data.get("student_id") # 或是用 mac
+async def payment_callback(
+    data: dict,
+    db: Session = Depends(get_db) # 這裡需要注入 DB
+):
+    target_mac = data.get("student_id")
     
-    if target_mac in student_quiz_state:
+    if target_mac:
         print(f"[Payment] 收到來自 TG 的付款通知: {target_mac}")
-        student_quiz_state[target_mac]["payment_status"] = "paid"
-        return {"status": "success", "message": "已標記為付款完成"}
+        
+        # 1. 標記暫存狀態
+        if target_mac in student_quiz_state:
+            student_quiz_state[target_mac]["payment_status"] = "paid"
+        
+        # 2. 這裡也要執行解鎖邏輯 (因為使用者可能是直接透過 Bot 付款，沒經過前端 confirm)
+        # 取得 IP
+        user_ip = get_ip_by_mac(target_mac)
+        
+        # 解除 PUNISHED 狀態
+        try:
+            student = db.query(StudentRecord).filter(StudentRecord.mac_address == target_mac).first()
+            if student and getattr(student, 'p_status', 'NORMAL') == 'PUNISHED':
+                student.p_status = 'NORMAL'
+                db.commit()
+                print(f"[Payment-Bot] 已解除 {target_mac} 的 PUNISHED 狀態")
+        except Exception as e:
+            print(f"[Payment-Bot] DB Error: {e}")
+
+        # 執行 Script
+        if user_ip:
+            execute_restore_script(user_ip, WIFI_INTERFACE)
+            
+        return {"status": "success", "message": "已處理付款並解鎖"}
     
     return {"status": "error", "message": "找不到該學生"}
 

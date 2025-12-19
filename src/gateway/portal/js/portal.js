@@ -113,7 +113,7 @@ const app = createApp({
                     spinResult.value = { type: 'payment', text: '💰 資本的制裁' };
                     
                     // 設定並儲存金額
-                    const amount = 70;
+                    const amount = 100;
                     paymentAmount.value = amount;
                     localStorage.setItem('user_fate', 'payment');
                     localStorage.setItem('payment_amount', amount);
@@ -215,16 +215,23 @@ const app = createApp({
                     body: JSON.stringify({ student_id: macAddress.value })
                 });
                 const data = await res.json();
+
+                // 取得金額
+                const finalAmount = data.amount;
                 
-                paymentAmount.value = data.amount;
-                paymentReason.value = '放棄挑戰 (含累積罰款)';
+                paymentAmount.value = finalAmount;
+                localStorage.setItem('payment_amount', finalAmount);
+
+                // 直接跳轉到 Telegram Bot 繳費
+                // 格式：https://t.me/BOT_NAME?start=pay_金額
+                window.location.href = `https://t.me/kda_v1_bot?start=pay_${finalAmount}`;
                 
-                // 儲存金額
-                localStorage.setItem('user_fate', 'payment');
-                localStorage.setItem('payment_amount', data.amount);
-                
-                currentPage.value = 'payment';
-            } catch(e) { alert('系統錯誤'); }
+                } catch(e) { 
+                console.error("API Error, using fallback calculation");
+                // 萬一網路或 API 錯誤的備案：直接用前端計算 (累積罰款 + 100)
+                const fallbackAmount = currentPenalty.value + 100;
+                window.location.href = `https://t.me/kda_v1_bot?start=pay_${fallbackAmount}`;
+            }
         };
 
         // --- 5. 付款 Polling ---

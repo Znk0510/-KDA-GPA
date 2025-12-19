@@ -1,39 +1,75 @@
-### 專案架構概覽
-- 後端：Python FastAPI
-    - 負責 API 處理、資料庫存取、AI 題目生成、ARP 網路掃描
-- 前端：HTML5 + Vue.js 3 (CDN) + TailwindCSS
-    - 老師端 (teacher.html)：儀表板，查看學生違規狀況、上傳 PDF 教材
-    - 學生端 (index.html)：轉盤命運遊戲、AI 測驗介面、支付介面
-- 系統服務：
-    - Nginx：反向代理 server，負責 Captive Portal 的重導向與靜態檔案服務
-    - Ollama (AI)：本地運行的 LLM (Gemma 2:2b)，負責讀取教材並出題
-    - PostgreSQL：儲存使用者、學生狀態、連線紀錄與測驗結果
-    - Scapy：進行 ARP 掃描以偵測區網內的裝置
+# 你的 KDA 換我的 GPA
+## Concept Development 專案簡介
+這是一個專為老師設計的教學現場網路控制器，針對上課分心打遊戲、看影片等不務正業的問題。利用 Linux 主機作為教學用 Wi-Fi AP，強迫學生流量經過此閘道器進行監管，同時導入 Telegram 身份綁定、DNS 阻擋以及回答問題等贖罪機制。
 
-### 功能清單
-我目前已經完成了以下模組：
-- 網路攔截與認證 (Captive Portal)：
-    - 透過 Nginx攔截未授權流量，將學生導向 /portal
-    - 實作「命運轉盤」，隨機決定學生需要「回答問題」還是「支付罰款」
-- AI 出題：
-    - 老師上傳 PDF 講義，後端自動解析
-    - 整合 Ollama (Gemma 2)，根據講義內容即時生成單選題
-- 即時監控儀表板：
-    - 自動掃描區網 (ARP Scan) 辨識上線裝置
-    - 顯示違規次數排行榜（不認真排行榜）
-- 系統整合：
-    - 資料庫 ORM 設計 (SQLAlchemy)
-    - 模擬防火牆控制 (MockFirewall)，可隨時切換為真實 Shell Script
+可藉由此設計達到：
+- 老師登入後台點名 (出缺席)
+    - 沒登入 = 離線 -> 缺席
+    - 違規次數
+- 降低學生上課不專心
+- 兩種機制：
+    - 知識的贖罪：回答問題理解一點課堂內容 -> 答錯需支付的錢同下 ...
+    - 資本的制裁：直接付款 -> 收到的錢拿來獎勵上課專心的同學 ... 等
+## Implementation Resources 硬體資源
+- Gateway：運行 Ubuntu Linux 的 PC (老師機)，作為軟體路由器連接至 Wi-Fi 基地台。
+- 網路介面：
+    - WAN：網路來源
+    - WLAN：路由器作為 AP 發射訊號
+- 終端設備：學生筆電或手機
+## Existing Library/Software 技術與工具
+| 功能模組 | 技術 | 說明 |
+| :--- | :--- | :--- |
+| **軟體基地台** | hostapd | 將 Linux 筆電變身為 Wi-Fi AP |
+| **Pi-hole** | DNS | 阻擋廣告與色情網站域名、DHCP Server、紀錄 DNS 查詢|
+| **登入** | iptables、Nginx、Telegram Bot | 學生連上 Wi-Fi 後需透過 Telegram 登入，telegram bot 詢問資料 |
+| **執行懲罰** | iptables、tc | 遊戲：直接 DROP，造成連線逾時<br>影音：限制頻寬 (降速) |
+| **出席偵測** | ARP Table Scan | 掃描連線 IP/MAC，比對誰沒有連上網 |
+| **勸導頁面** | Nginx | 當學生違規，需至勸導頁面。命運轉盤隨機決定學生：知識的贖罪、資本的制裁 |
+| **老師後台** | Vue 3 | 可看全班連線狀態、違規名單與違規次數|
+| **AI 出題** | RAG + LLM (Gemma 2:2b) | 老師上傳 PDF 講義，後端自動解析，整合 Ollama (Gemma 2)，生成單選題 |
+| **金流** | Telegram Bot | 處理「付費解鎖」請求，學生付款後恢復連線 |
 
-###  系統需求
-參考 `requirements.txt`
+## 系統架構
+![image](https://hackmd.io/_uploads/SJ17nNZQ-e.png)
 
+## Implementation Process 運作流程
+登入
+
+學生連到 Linux PC 發射的熱點 -> 點擊 telegram bot 連結 -> 產生結尾是該用戶 IP 的 deep link -> 跟 telegram bot 講學號姓名 -> telegram bot 紀錄 IP、學號、姓名、telegram id、MAC address
+
+---
+當學生被鎖網時，有兩個原因：
+- 因為打遊戲 -> 打開瀏覽器隨機一個網頁都會跳轉到勸導頁面
+- 因為看影片 -> 該介面會強制跳轉到勸導頁面，並且打開隨機一個網頁也都會跳轉到勸導頁面
+
+任何 HTTP 請求都會被 Nginx 強制轉址到「勸導頁面」，需要點擊轉盤來決定命運，若抽到：
+- 知識的贖罪 (AI 測驗)：後端讀取老師上傳的 PDF，利用 AI 即時生成選擇題
+    - 答對 -> 系統解鎖網路 ->
+    - 第一次答錯 -> 會扣 40 顆星 -> 有第二次機會，選擇要 **繼續回答問題解鎖** 還是 **直接接受資本的制裁**
+        - 繼續回答，則 AI 繼續生成其他題目，回答錯誤則繼續扣星星(累計計算) -> 回答正確 -> 累計答錯需付出的點數(含第一次答錯) -> 點擊按鈕連結至 Tg Bot 付款 -> 付款完畢 -> 系統解鎖 IP
+        - 選 **資本的制裁** -> 加上第一次答錯的扣 40 顆星 + 直接付費解鎖的 100 顆星 -> 點擊按鈕連結至 Tg Bot 付款 -> 付款完畢 -> 系統解鎖 IP
+- 資本的制裁 (付費解鎖)
+    - 直接付費解鎖的 100 顆星 -> 點擊按鈕連結至 Tg Bot 付款 -> 付款完畢 -> 系統解鎖 IP
+
+## Installation
+```bash
+# Clone
+git clone <repository_url>
+cd smart-classroom
+
+# 建立虛擬環境
+python3 -m venv venv
+source venv/bin/activate
+
+# 安裝依賴
+pip install -r requirements.txt
+```
 ### 資料庫設定
 ```bash
 # 進入 psql
 sudo -u postgres psql
 
-# 建立使用者與資料庫 (密碼請對應 src/db/database.py 的設定)
+# 建立使用者與資料庫 (密碼對應 src/db/database.py 的設定)
 CREATE USER lsa WITH PASSWORD 'lsapasswd';
 CREATE DATABASE student_guard OWNER lsa;
 \q
@@ -46,10 +82,8 @@ https://github.com/ollama/ollama/releases
 # 找到 v0.13.3，下載
 ollama-linux-amd64.tgz
 
-# 下載好了
-cd ~/Downloads
-
 # 解壓縮並安裝
+cd ~/Downloads
 sudo tar -C /usr -xzf ollama-linux-amd64.tgz
 
 # 建立 Ollama 使用者
@@ -65,24 +99,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ollama
 sudo systemctl status ollama
 
-# 確認 ollama version is 0.13.3
+# 確認 ollama version (0.13.3)
 ollama --version
 
 # 下載模型 
 ollama pull gemma2:2b
-```
-### 專案安裝
-```bash
-# Clone
-git clone <repository_url>
-cd smart-classroom
-
-# 建立虛擬環境
-python3 -m venv venv
-source venv/bin/activate
-
-# 安裝依賴
-pip install -r requirements.txt
 ```
 ### Nginx 設定
 將 Nginx config 部署到系統：
@@ -107,69 +128,48 @@ chmod o+x /home/[user]/smart-classroom/src/gateway/portal
 
 # 確保 index.html 檔案可讀
 chmod o+r /home/[user]/smart-classroom/src/gateway/portal/index.html
+
+# 連結設定檔到 Nginx sites-available
+sudo ln -s /home/[user]/smart-classroom/config/nginx/smart-classroom.conf /etc/nginx/sites-available/smart-classroom.conf
+
+# 啟用設定檔 (連結到 sites-enabled)
+sudo ln -s /etc/nginx/sites-available/smart-classroom.conf /etc/nginx/sites-enabled/
+
+# 連結靜態檔案目錄到 /var/www/portal
+# 這樣 Nginx 讀取 /var/www/portal 時，實際上是讀專案中的 src/gateway/portal
+sudo ln -s /home/[user]/smart-classroom/src/gateway/portal /var/www/portal
+
+# 檢查
+sudo nginx -t
+sudo systemctl reload nginx
 ```
-### 啟動方式
-1. 啟動後端 API
-在專案根目錄 (`smart-classroom/`) 執行：
+## Usage
+1. 啟動後端 API 在 `smart-classroom/` 執行：
 ```bash
-# 啟動 FastAPI，預設 Port 為 8000
-# 使用 sudo 才能執行 ARP 掃描 (Scapy 需要 root 權限)
+# 啟動 FastAPI
 sudo ./venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 >[!Warning]
 >`main.py` 中的 WIFI_INTERFACE 和 TARGET_NETWORK 變數依你的實際網卡名稱修改
 
->`./venv/bin/uvicorn`：直接指定要跑「虛擬環境資料夾」裡面的 uvicorn
->- 這樣它會自動知道要用虛擬環境裡的 Python 和套件，而不會跑去用系統的
->
->`src.main:app`：因為 `main.py` 在 src 資料夾內，要告訴它路徑
-`--host 0.0.0.0`：這樣做 Captive Portal 才能被連上熱點的手機存取
+## 遇到問題
+* 資料庫的合併(SQLite /PostgreSQL)
+* 搶port的問題 (已解決)
+* 預設 drop https 導致 TG bot 無法進入 (已解決)
+* 輪盤頁面不會自動跳轉 (未解)
+* 付錢之後的解鎖 (未解)
+* 穿透防火牆的幽靈封包 (UDP)
 
-2. 瀏覽器測試
-- 老師後台: 開啟瀏覽器輸入 http://localhost/teacher
-    - 預設無帳號，先註冊建立帳號
-- 學生模擬:
-    - 開啟 http://localhost/internet (會被重導向至 Portal)
-    - 或者直接輸入 http://localhost/portal 體驗被鎖定的畫面
-### API 說明
-主要 API Endpoints
-| 分類 (Category) | Method | Endpoint | 說明 (Description) |
-| :--- | :--- | :--- | :--- |
-| **Auth** | `POST` | `/api/login` | 老師登入 (回傳 Token) |
-| **Auth** | `POST` | `/api/register` | 老師註冊 |
-| **Dashboard** | `GET` | `/api/students` | 取得所有學生狀態 (含違規次數) |
-| **File** | `POST` | `/api/admin/upload` | 上傳 PDF 教材 (自動 RAG 處理) |
-| **Quiz** | `GET` | `/api/quiz` | AI 生成題目 |
-| **Quiz** | `POST` | `/api/quiz/answer` | 提交答案，判斷是否解鎖網路 |
-| **Portal** | `GET` | `/api/auth/status` | 前端輪詢用，檢查是否已授權 |
+## 未來展望
+* 能捕捉「登入/線上」狀態，也可以感知「離線/登出」
+* 登入的部分可以讓筆電與手機同時登入
+* 可以自動跳轉到輪盤，不用手輸網址
 
----
-### 檔案結構
-```text
-smart-classroom/
-├── config/                  # 設定檔
-│   └── nginx/               # Nginx 設定
-├── data/uploads/            # PDF 教材存放區
-├── src/
-│   ├── ai/                  # AI 模組
-│   │   ├── pdf_loader.py    # PDF 解析與切塊
-│   │   └── service.py       # Ollama 串接與 Prompt Engineering
-│   ├── core/                # 核心邏輯
-│   │   └── auth_service.py  # 授權狀態管理
-│   ├── db/                  # 資料庫層
-│   │   ├── database.py      # 連線設定
-│   │   ├── models.py        # SQLAlchemy 模型定義
-│   │   └── repositories.py  # 資料存取層 (CRUD)
-│   ├── gateway/
-│   │   ├── portal/              # 前端靜態檔案 (HTML/CSS/JS)
-│   │   │   ├── index.html       # 勸導介面
-│   │   │   ├── teacher.html     # 老師後台
-│   │   │   └── js/portal.js     # 勸導介面
-│   │   │   └── css/style.css    # 勸導介面
-│   │   └── service.py       # Captive Portal 邏輯 (API 與 Core 的橋樑)
-│   ├── network/             # 網路控制層
-│   │   ├── firewall.py      # 防火牆控制器 (Mock/Shell)
-│   │   ├── scanner.py       # ARP 掃描器
-│   │   └── registry.py      # 學生裝置註冊邏輯
-│   └── main.py              # FastAPI 入口點
-└── requirements.txt         # Python 依賴清單
+## Job Assignment 工作分配
+|      學號      |       姓名        |                         工作內容                          |
+|:--------------:|:-----------------:|:---------------------------------------------------------:|
+| 112213011 | 鄒傑丞 |  |
+| 112213015 | 盧鈺博 |  |
+| 112213062| 鄧傑笙 |  |
+| 112213080 | 蔡秉凱 |  |
+|  | 簡嘉成 |  |

@@ -39,29 +39,32 @@ iptables、Nginx、DNS
 >詳細整理在 Existing Library/Software 
 
 ## Installation
+### 1. 專案環境建置
+下載專案並建立 Python 虛擬環境
 ```bash
-# Clone
-git clone <repository_url>
+# Clone Repository
+git clone https://github.com/NCNU-OpenSource/-KDA-GPA.git
 cd smart-classroom
 
-# 建立虛擬環境
+# 建立並啟用虛擬環境
 python3 -m venv venv
 source venv/bin/activate
 
-# 安裝依賴
+# 安裝套件
 pip install -r requirements.txt
 ```
-### 資料庫設定
+### 2. 資料庫設定
 ```bash
 # 進入 psql
 sudo -u postgres psql
 
-# 建立使用者與資料庫 (密碼對應 src/db/database.py 的設定)
+# 建立使用者與資料庫 (密碼對應 src/db/database.py)
 CREATE USER lsa WITH PASSWORD 'lsapasswd';
 CREATE DATABASE student_guard OWNER lsa;
 \q
 ```
-### AI 模型設定 (Ollama)
+### 3. AI 模型設定 (Ollama)
+使用 Ollama v0.13.3 版本
 ```bash
 # 到瀏覽器開啟 
 https://github.com/ollama/ollama/releases
@@ -78,41 +81,29 @@ sudo useradd -r -s /bin/false -U -m -d /usr/share/ollama ollama
 sudo usermod -a -G ollama $(whoami)
 
 # 設定開機服務
+# 將 ExecStart 的路徑改成 /usr/bin/ollama
 sudo vim /etc/systemd/system/ollama.service
-# ExecStart 的路徑改成 /usr/bin/ollama
 
 # 啟動服務
 sudo systemctl daemon-reload
 sudo systemctl enable --now ollama
-sudo systemctl status ollama
 
-# 確認 ollama version (0.13.3)
+# 確認版本與下載模型
 ollama --version
 
 # 下載模型 
 ollama pull gemma2:2b
 ```
-### Nginx 設定
-將 Nginx config 部署到系統：
-1. 複製靜態檔案：將前端檔案移至 Nginx 預設讀取路徑
-```BASH
-sudo mkdir -p /var/www/portal
-# 假設你在專案根目錄
-sudo cp -r src/gateway/portal/* /var/www/portal/
-```
-2. 開放權限讓 Nginx 可以讀取專案靜態檔
+### 4. Nginx 部署設定
+將前端頁面透過 Nginx 部署，並設定權限讓 Nginx 可讀取使用者目錄下的靜態檔。
 ```bash
-# 讓其他人(包含 Nginx) 可以進入家目錄
-# 給 /home/[user] 目錄 execute 權限 (x)，允許進入但不允許列出檔案列表
-# [user] 要換成自己
-chmod o+x /home/znk
-
-# 確保專案路徑沿途都有權限
+# 開放家目錄與專案路徑權限
+# [user] 替換為實際使用者名稱
+chmod o+x /home/[user]
 chmod o+x /home/[user]/smart-classroom
 chmod o+x /home/[user]/smart-classroom/src
 chmod o+x /home/[user]/smart-classroom/src/gateway
 chmod o+x /home/[user]/smart-classroom/src/gateway/portal
-
 # 確保 index.html 檔案可讀
 chmod o+r /home/[user]/smart-classroom/src/gateway/portal/index.html
 
@@ -126,7 +117,7 @@ sudo ln -s /etc/nginx/sites-available/smart-classroom.conf /etc/nginx/sites-enab
 # 這樣 Nginx 讀取 /var/www/portal 時，實際上是讀專案中的 src/gateway/portal
 sudo ln -s /home/[user]/smart-classroom/src/gateway/portal /var/www/portal
 
-# 檢查
+# 重啟 Nginx
 sudo nginx -t
 sudo systemctl reload nginx
 ```
@@ -170,7 +161,7 @@ sudo ./venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --relo
 ## Job Assignment
 > 部分對應 Existing Library/Software 功能模組
 
-|      學號      |       姓名        |                         工作內容                          |
+|      學號      |       姓名 &nbsp       |                         工作內容                          |
 |:--------------:|:-----------------:|:---------------------------------------------------------:|
 | 112213011 | 鄒傑丞 | 建立網路環境、系統整合(功能串接、資料庫整合...) |
 | 112213015 | 盧鈺博 | Pi-hole、登入、執行懲罰、資料庫、ReadMe 撰寫 |

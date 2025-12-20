@@ -125,7 +125,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 >[!Note]
->這邊 Nginx 使用 ==port-based porxy==，分別是 81 port 與 80 port
+>這邊 Nginx 使用 port-based porxy，分別是 81 port 與 80 port
 
 ### 5. Pi hole 設定
 ```bash

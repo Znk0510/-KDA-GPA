@@ -29,10 +29,8 @@
 | **AI 出題** | RAG + LLM (Gemma 2:2b) | 老師上傳 PDF 講義，後端自動解析，整合 Ollama (Gemma 2)，生成單選題 |
 | **金流** | Telegram Bot | 處理「付費解鎖」請求，學生付款後恢復連線 |
 
-## System Architecture
-![image](https://hackmd.io/_uploads/SJ17nNZQ-e.png)
-
 ## Implementation Process
+![image](https://hackmd.io/_uploads/SJ17nNZQ-e.png)
 
 ## Knowledge from Lecture
 iptables、Nginx、DNS
@@ -117,10 +115,53 @@ sudo ln -s /etc/nginx/sites-available/smart-classroom.conf /etc/nginx/sites-enab
 # 這樣 Nginx 讀取 /var/www/portal 時，實際上是讀專案中的 src/gateway/portal
 sudo ln -s /home/[user]/smart-classroom/src/gateway/portal /var/www/portal
 
+# 設定登入介面聽 81 port !!
+sudo vim /etc/nginx/sites-available/login
+# 啟用設定檔 (連結到 sites-enabled)
+sudo ln -s /etc/nginx/sites-available/login /etc/nginx/sites-enabled/
+
 # 重啟 Nginx
 sudo nginx -t
 sudo systemctl reload nginx
 ```
+>[!Note]
+>這邊 Nginx 使用 ==port-based porxy==，分別是 81 port 與 80 port
+
+### 5. Pi hole 設定
+```bash
+# 安裝 pi hole 
+curl -sSL https://install.pi-hole.net | bash
+```
+>[!Important]
+>這邊要改 pi hole Web UI 使用的 port，原本預設是 80，會撞到 Nginx
+>* 去 `sudo vim /etc/pihole/pihole.toml` 找 `webserver`
+>* `port = "8080o,443os,[::]:8080o,[::]:443os"` 改成使用 8080 port
+
+* 進入Web UI 把 DHCP Server 打開，發放的 ip 區域為 `192.168.100.0/24`
+
+### 6. Flask and TG bot
+```bash
+# 進入 venv
+source venv/bin/activate
+# 下載套件
+sudo apt install python3-pip
+sudo apt install python3-flask
+# TG bot
+sudo pip3 install pyTelegramBotAPI
+```
+### 7. iptables 前置設定
+1. 先放行 DNS，DNS 用 53 port
+```bash
+sudo iptables -I FORWARD -s 192.168.56.0/24 -p udp --dport 53 -j ACCEPT
+sudo iptables -I FORWARD -s 192.168.56.0/24 -p tcp --dport 53 -j ACCEPT
+```
+2. 放行 TG 使用網段
+`./allow_telegram.sh` 腳本裡面有寫好特定網段，執行就可以設定好 iptables
+3. 將所有 http 流量 DNAT 到登入畫面 (81 port)
+`sudo iptables -t nat -A PREROUTING -p tcp -s 192.168.100.0/24 --dport 80 -j DNAT --to-destination 192.168.100.1:81`
+4. 封鎖流量
+`sudo iptables -A FORWARD -s 192.168.100.0/24 -j DROP`
+
 ## Usage
 1. 啟動後端 API 在 `smart-classroom/` 執行：
 ```bash

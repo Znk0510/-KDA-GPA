@@ -171,6 +171,13 @@ sudo ./venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --relo
 >[!Warning]
 >`main.py` 中的 WIFI_INTERFACE 和 TARGET_NETWORK 變數依你的實際網卡名稱修改
 
+2. 啟動登入畫面 (Flask)
+`python3 login.py`
+3. 啟動登入 TG bot
+`sudo /project/venv/bin/python3 wifi_bot.py` 
+4. 開啟流量監控
+`sudo python3 detect_violation.py`
+
 ---
 登入：
 

@@ -132,6 +132,7 @@ sudo ./venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --relo
 
 ---
 登入：
+
 學生連到 Linux PC 發射的熱點 -> 點擊 telegram bot 連結 -> 產生結尾是該用戶 IP 的 deep link -> 跟 telegram bot 講學號姓名 -> telegram bot 紀錄 IP、學號、姓名、telegram id、MAC address
 
 ---

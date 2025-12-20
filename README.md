@@ -10,13 +10,13 @@
 - 兩種機制：
     - 知識的贖罪：回答問題理解一點課堂內容 -> 答錯需支付的錢同下 ...
     - 資本的制裁：直接付款 -> 收到的錢拿來獎勵上課專心的同學 ... 等
-## Implementation Resources 硬體資源
+## Implementation Resources
 - Gateway：運行 Ubuntu Linux 的 PC (老師機)，作為軟體路由器連接至 Wi-Fi 基地台。
 - 網路介面：
     - WAN：網路來源
     - WLAN：路由器作為 AP 發射訊號
 - 終端設備：學生筆電或手機
-## Existing Library/Software 技術與工具
+## Existing Library/Software
 | 功能模組 | 技術 | 說明 |
 | :--- | :--- | :--- |
 | **軟體基地台** | hostapd | 將 Linux 筆電變身為 Wi-Fi AP |
@@ -29,27 +29,14 @@
 | **AI 出題** | RAG + LLM (Gemma 2:2b) | 老師上傳 PDF 講義，後端自動解析，整合 Ollama (Gemma 2)，生成單選題 |
 | **金流** | Telegram Bot | 處理「付費解鎖」請求，學生付款後恢復連線 |
 
-## 系統架構
+## System Architecture
 ![image](https://hackmd.io/_uploads/SJ17nNZQ-e.png)
 
-## Implementation Process 運作流程
-登入
+## Implementation Process
 
-學生連到 Linux PC 發射的熱點 -> 點擊 telegram bot 連結 -> 產生結尾是該用戶 IP 的 deep link -> 跟 telegram bot 講學號姓名 -> telegram bot 紀錄 IP、學號、姓名、telegram id、MAC address
-
----
-當學生被鎖網時，有兩個原因：
-- 因為打遊戲 -> 打開瀏覽器隨機一個網頁都會跳轉到勸導頁面
-- 因為看影片 -> 該介面會強制跳轉到勸導頁面，並且打開隨機一個網頁也都會跳轉到勸導頁面
-
-任何 HTTP 請求都會被 Nginx 強制轉址到「勸導頁面」，需要點擊轉盤來決定命運，若抽到：
-- 知識的贖罪 (AI 測驗)：後端讀取老師上傳的 PDF，利用 AI 即時生成選擇題
-    - 答對 -> 系統解鎖網路 ->
-    - 第一次答錯 -> 會扣 40 顆星 -> 有第二次機會，選擇要 **繼續回答問題解鎖** 還是 **直接接受資本的制裁**
-        - 繼續回答，則 AI 繼續生成其他題目，回答錯誤則繼續扣星星(累計計算) -> 回答正確 -> 累計答錯需付出的點數(含第一次答錯) -> 點擊按鈕連結至 Tg Bot 付款 -> 付款完畢 -> 系統解鎖 IP
-        - 選 **資本的制裁** -> 加上第一次答錯的扣 40 顆星 + 直接付費解鎖的 100 顆星 -> 點擊按鈕連結至 Tg Bot 付款 -> 付款完畢 -> 系統解鎖 IP
-- 資本的制裁 (付費解鎖)
-    - 直接付費解鎖的 100 顆星 -> 點擊按鈕連結至 Tg Bot 付款 -> 付款完畢 -> 系統解鎖 IP
+## Knowledge from Lecture
+iptables、Nginx、DNS
+>詳細整理在 Existing Library/Software 
 
 ## Installation
 ```bash
@@ -152,6 +139,21 @@ sudo ./venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --relo
 >[!Warning]
 >`main.py` 中的 WIFI_INTERFACE 和 TARGET_NETWORK 變數依你的實際網卡名稱修改
 
+---
+登入：
+學生連到 Linux PC 發射的熱點 -> 點擊 telegram bot 連結 -> 產生結尾是該用戶 IP 的 deep link -> 跟 telegram bot 講學號姓名 -> telegram bot 紀錄 IP、學號、姓名、telegram id、MAC address
+
+---
+當學生被鎖網時，須至勸導(懲罰)頁面進行解鎖：
+點擊轉盤來決定命運，若抽到：
+- 知識的贖罪 (AI 測驗)：後端讀取老師上傳的 PDF，利用 AI 即時生成選擇題
+    - 答對 -> 系統解鎖 IP
+    - 第一次答錯 -> 會扣 40 顆星 -> 有第二次機會，選擇要 **繼續回答問題解鎖** 還是 **直接接受資本的制裁**
+        - 繼續回答，則 AI 繼續生成其他題目，回答錯誤則繼續扣星星(累計計算) -> 回答正確 -> 累計答錯需付出的點數(含第一次答錯) -> 點擊按鈕連結至 Tg Bot 付款 -> 付款完畢 -> 系統解鎖 IP
+        - 選 **資本的制裁** -> 加上第一次答錯的扣 40 顆星 + 直接付費解鎖的 100 顆星 -> 點擊按鈕連結至 Tg Bot 付款 -> 付款完畢 -> 系統解鎖 IP
+- 資本的制裁 (付費解鎖)
+    - 直接付費解鎖的 100 顆星 -> 點擊按鈕連結至 Tg Bot 付款 -> 付款完畢 -> 系統解鎖 IP
+
 ## 遇到問題
 * 資料庫的合併(SQLite /PostgreSQL)
 * 搶port的問題 (已解決)
@@ -165,11 +167,13 @@ sudo ./venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --relo
 * 登入的部分可以讓筆電與手機同時登入
 * 可以自動跳轉到輪盤，不用手輸網址
 
-## Job Assignment 工作分配
+## Job Assignment
+> 部分對應 Existing Library/Software 功能模組
+
 |      學號      |       姓名        |                         工作內容                          |
 |:--------------:|:-----------------:|:---------------------------------------------------------:|
-| 112213011 | 鄒傑丞 |  |
-| 112213015 | 盧鈺博 |  |
-| 112213062| 鄧傑笙 |  |
-| 112213080 | 蔡秉凱 |  |
-|  | 簡嘉成 |  |
+| 112213011 | 鄒傑丞 | 建立網路環境、系統整合(功能串接、資料庫整合...) |
+| 112213015 | 盧鈺博 | Pi-hole、登入、執行懲罰、資料庫 |
+| 112213062 | 鄧傑笙 | 處理「付費解鎖」，學生付款後恢復連線 |
+| 112213080 | 蔡秉凱 | 主題發想、後端開發、勸導頁面、資料庫、出席偵測、AI 出題、整合老師後台前端 |
+| 109213044 | 簡嘉成 | 老師後台前端 |
